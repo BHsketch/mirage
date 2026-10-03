@@ -39,7 +39,7 @@
 #include <nvshmemx.h>
 #endif
 #endif
-#ifdef MPK_NCU_RANGE
+#ifdef BH_MPK_NCU_RANGE
 #include <cuda_profiler_api.h>
 #endif
 #include <map>
@@ -1785,7 +1785,11 @@ extern "C" void
   global_runtime_config.num_gpus = npes;
   global_runtime_config.my_gpu_id = mype;
   global_runtime_config.num_graphs = 1;
+#if defined(BH_SPLIT_WORKER_SCHEDULER)
   global_runtime_config.split_worker_scheduler = true;
+#else
+  global_runtime_config.split_worker_scheduler = false;
+#endif
 
   std::vector<FullTaskDesc> all_fulltasks;
   std::vector<EventDesc> all_events;
@@ -1965,7 +1969,7 @@ extern "C" void launch_persistent_kernel(cudaStream_t default_stream) {
     nvshmem_barrier_all();
 #endif
   }
-#ifdef MPK_NCU_RANGE
+#ifdef BH_MPK_NCU_RANGE
   // Nsight Compute range replay (`ncu --replay-mode range`): the range covers
   // only the worker/scheduler launches. prepare_kernel stays outside; ncu
   // syncs at range start, so its memory snapshot is the post-prepare state.
@@ -2014,7 +2018,7 @@ extern "C" void launch_persistent_kernel(cudaStream_t default_stream) {
     cudaStreamWaitEvent(
         default_stream, global_runtime_config.scheduler_done_event, 0);
 #endif
-#ifdef MPK_NCU_RANGE
+#ifdef BH_MPK_NCU_RANGE
     // Both kernels must finish inside the range; makes this launch blocking.
     cudaStreamSynchronize(global_runtime_config.worker_stream);
     cudaStreamSynchronize(global_runtime_config.scheduler_stream);
@@ -2044,7 +2048,7 @@ extern "C" void launch_persistent_kernel(cudaStream_t default_stream) {
     }
     printf("Finished Launch Persistent Kernel\n");
   }
-#ifdef MPK_NCU_RANGE
+#ifdef BH_MPK_NCU_RANGE
   cudaProfilerStop();
 #endif
 }
