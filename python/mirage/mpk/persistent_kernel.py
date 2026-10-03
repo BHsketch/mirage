@@ -381,9 +381,11 @@ def get_compile_command(
     
     if profiling:
         flags = flags + ["-DMPK_ENABLE_PROFILING"]
-    # Nsight Compute range-replay markers around the worker/scheduler launch
-    if os.environ.get("MPK_NCU_RANGE", "0") == "1":
-        flags = flags + ["-DMPK_NCU_RANGE"]
+    # BHsketch: Nsight Compute range-replay markers around the worker/scheduler launch
+    if os.environ.get("BH_MPK_NCU_RANGE", "0") == "1":
+        flags = flags + ["-DBH_MPK_NCU_RANGE"]
+    if os.environ.get("BH_SPLIT_WORKER_SCHEDULER", "1") == "1":
+        flags = flags + ["-DBH_SPLIT_WORKER_SCHEDULER"]
 
     return common_cmd + specific_cmd + flags
 
