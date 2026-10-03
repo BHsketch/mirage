@@ -381,6 +381,9 @@ def get_compile_command(
     
     if profiling:
         flags = flags + ["-DMPK_ENABLE_PROFILING"]
+    # Nsight Compute range-replay markers around the worker/scheduler launch
+    if os.environ.get("MPK_NCU_RANGE", "0") == "1":
+        flags = flags + ["-DMPK_NCU_RANGE"]
 
     return common_cmd + specific_cmd + flags
 
