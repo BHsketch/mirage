@@ -135,6 +135,13 @@ def _decode_events(profiler_buffer: torch.Tensor):
     num_blocks = int(num_blocks)
     num_groups = int(num_groups)
 
+    # The tag holds block * num_groups + group in 8 bits.
+    if num_blocks * num_groups > 256:
+        raise RuntimeError(
+            f"profiler header has {num_blocks} blocks x {num_groups} groups; "
+            f"the 8-bit block-group tag field holds at most 256"
+        )
+
     yield ("__header__", num_blocks, num_groups)
 
     for i in range(1, len(profiler_buffer_host)):
@@ -147,6 +154,12 @@ def _decode_events(profiler_buffer: torch.Tensor):
         event_no, block_idx, group_idx, event_idx, event_type = decode_tag(
             tag, num_blocks, num_groups
         )
+        if block_idx >= num_blocks:
+            raise RuntimeError(
+                f"profiler entry {i} is from block {block_idx}, but the header "
+                f"says {num_blocks} blocks: kernels sharing the buffer disagree "
+                f"on its layout (see PROFILER_INIT_AT in profiler.h)"
+            )
         yield (block_idx, group_idx, event_idx, event_no, event_type, timestamp)
 
 

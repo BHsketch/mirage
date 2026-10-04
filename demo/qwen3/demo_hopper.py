@@ -218,20 +218,29 @@ if __name__ == "__main__":
         fused_outdim_2 = 2 * intermediate_size
         num_kv_cache_chunks = max(1, args.max_seq_length // 256)
 
-        if args.profiling:
-            profiler_tensor = torch.zeros(
-                3000 * 128, dtype=torch.uint64, device="cuda"
-            ).contiguous()
-        else:
-            profiler_tensor = None
-            
         spec_decode_config = mi.spec_decode_class(
             args.spec_decode,
             ngram_size=args.ngram_size,
             spec_length=args.spec_length,
         )
-            
+
         num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
+
+        if args.profiling:
+            # The kernel has no bounds check on this buffer: it writes one
+            # row per block (workers, then scheduler blocks of 4 warps), one
+            # entry per task begin/end, for every decode iteration. Qwen3-8B
+            # on 128 workers is ~280 entries per row per iteration (17732
+            # tasks / 128 workers x 2); 1024 leaves room for scheduler rows.
+            num_profiler_rows = num_workers + num_schedulers // 4
+            profiler_entries_per_row_per_iter = 1024
+            profiler_tensor = torch.zeros(
+                1 + num_profiler_rows * profiler_entries_per_row_per_iter
+                * args.max_seq_length,
+                dtype=torch.uint64, device="cuda"
+            ).contiguous()
+        else:
+            profiler_tensor = None
         qo_indptr_buffer = torch.empty(
             args.max_num_batched_requests + 1, dtype=torch.int32, device="cuda")
         paged_kv_indptr_buffer = torch.empty(
