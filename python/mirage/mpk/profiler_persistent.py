@@ -5,6 +5,7 @@ from collections import namedtuple
 from enum import Enum
 from typing import List
 
+import numpy as np
 import torch
 from tg4perfetto import TraceGenerator
 
@@ -128,12 +129,18 @@ def _decode_events(profiler_buffer: torch.Tensor):
 
     First yield is a header tuple ("__header__", num_blocks, num_groups);
     subsequent yields are (block_idx, group_idx, event_idx, event_no,
-    event_type, timestamp).
+    event_type, timestamp), in buffer order (time order within each row).
+
+    Decoding is vectorized: the buffer is sized for the longest run, so it is
+    tens of millions of entries, almost all empty.
     """
-    profiler_buffer_host = profiler_buffer.cpu()
-    num_blocks, num_groups = profiler_buffer_host[:1].view(dtype=torch.int32)
-    num_blocks = int(num_blocks)
-    num_groups = int(num_groups)
+    # Each entry is a little-endian uint64 = (tag, timestamp) as two uint32s.
+    words = (
+        profiler_buffer.cpu().view(torch.int32).numpy().view(np.uint32)
+        .reshape(-1, 2)
+    )
+    num_blocks = int(words[0, 0])
+    num_groups = int(words[0, 1])
 
     # The tag holds block * num_groups + group in 8 bits.
     if num_blocks * num_groups > 256:
@@ -144,23 +151,36 @@ def _decode_events(profiler_buffer: torch.Tensor):
 
     yield ("__header__", num_blocks, num_groups)
 
-    for i in range(1, len(profiler_buffer_host)):
-        if profiler_buffer_host[i] == 0:
-            continue
+    body = words[1:]
+    nonempty = np.flatnonzero(body[:, 0] | body[:, 1])
+    tags = body[nonempty, 0].astype(np.int64)
+    timestamps = body[nonempty, 1].astype(np.int64)
 
-        tag, timestamp = profiler_buffer_host[i : i + 1].view(dtype=torch.uint32)
-        tag = int(tag)
-        timestamp = int(timestamp)
-        event_no, block_idx, group_idx, event_idx, event_type = decode_tag(
-            tag, num_blocks, num_groups
+    event_no = tags >> 19
+    block_group = (tags >> 11) & 0xFF
+    event_idx = (tags >> 2) & 0x1FF
+    event_type = tags & 0x3
+    block_idx = block_group // num_groups
+    group_idx = block_group % num_groups
+
+    bad = np.flatnonzero(block_idx >= num_blocks)
+    if bad.size:
+        i = bad[0]
+        raise RuntimeError(
+            f"profiler entry {int(nonempty[i]) + 1} is from block "
+            f"{int(block_idx[i])}, but the header says {num_blocks} blocks: "
+            f"kernels sharing the buffer disagree on its layout "
+            f"(see PROFILER_INIT_AT in profiler.h)"
         )
-        if block_idx >= num_blocks:
-            raise RuntimeError(
-                f"profiler entry {i} is from block {block_idx}, but the header "
-                f"says {num_blocks} blocks: kernels sharing the buffer disagree "
-                f"on its layout (see PROFILER_INIT_AT in profiler.h)"
-            )
-        yield (block_idx, group_idx, event_idx, event_no, event_type, timestamp)
+
+    yield from zip(
+        block_idx.tolist(),
+        group_idx.tolist(),
+        event_idx.tolist(),
+        event_no.tolist(),
+        event_type.tolist(),
+        timestamps.tolist(),
+    )
 
 
 def export_to_perfetto_trace(
