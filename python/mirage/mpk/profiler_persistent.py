@@ -1,9 +1,11 @@
 import argparse
+import bisect
 import csv
 import json
 from collections import namedtuple
 from enum import Enum
 from typing import List
+import warnings
 
 import numpy as np
 import torch
@@ -104,6 +106,10 @@ event_name_list = {
 }
 
 
+# task_type of the task that starts each task-graph iteration.
+TASK_BEGIN_TASK_GRAPH = 10
+
+
 class EventType(Enum):
     kBegin = 0
     kEnd = 1
@@ -173,6 +179,21 @@ def _decode_events(profiler_buffer: torch.Tensor):
             f"(see PROFILER_INIT_AT in profiler.h)"
         )
 
+    # Row r owns body slots r, r + stride, ...; the kernel drops writes past
+    # the buffer's end (BH_MPK_PROFILER_ENTRIES), so a row that reached its
+    # last slot has probably lost its later events.
+    stride = num_blocks * num_groups
+    rows_present = np.arange(min(stride, len(body)))
+    capacity = (len(body) - 1 - rows_present) // stride + 1
+    used = np.bincount(nonempty % stride, minlength=stride)[: len(rows_present)]
+    full = np.flatnonzero(used >= capacity)
+    if full.size:
+        warnings.warn(
+            f"profiler buffer full for {full.size} of {stride} rows (first: "
+            f"row {int(full[0])}); later events from those rows were dropped. "
+            f"Lower BH_MPK_PROFILE_ITERS or enlarge the profiler tensor."
+        )
+
     yield from zip(
         block_idx.tolist(),
         group_idx.tolist(),
@@ -227,7 +248,13 @@ def export_to_csv(
     """Write one CSV row per fully-paired task event (and per kInstant event).
 
     Columns: task_type_id, task_type_name, block_idx, group_idx, event_no,
-             begin_ts, end_ts, duration_ns.
+             begin_ts, end_ts, duration_ns, iteration.
+
+    iteration is the task-graph iteration the event began in: the number of
+    TASK_BEGIN_TASK_GRAPH begins at or before begin_ts, minus one (-1 before
+    the first). Each iteration runs the begin-task-graph task exactly once,
+    and %globaltimer is common to all SMs. With chunked prefill, the first
+    ceil(prompt_len / max_num_batched_tokens) iterations are prefill.
 
     Raises RuntimeError on a dangling BEGIN with no matching END (indicates
     profiler buffer overflow or a code bug). Timestamps are raw 32-bit
@@ -281,10 +308,23 @@ def export_to_csv(
             f"group={g} event={name} event_no={no} ts={ts}"
         )
 
+    # Timestamps are 32-bit and may wrap mid-run: compare them as signed
+    # offsets from one reference point, valid for runs under ~2 s.
+    graph_begins = [r[5] for r in rows if r[0] == TASK_BEGIN_TASK_GRAPH]
+    ref = graph_begins[0] if graph_begins else 0
+
+    def rel(ts):
+        return ((ts - ref + 2**31) & 0xFFFFFFFF) - 2**31
+
+    graph_begins = sorted(rel(t) for t in graph_begins)
+    rows = [
+        r + (bisect.bisect_right(graph_begins, rel(r[5])) - 1,) for r in rows
+    ]
+
     with open(file_name, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "task_type_id", "task_type_name", "block_idx", "group_idx",
-            "event_no", "begin_ts", "end_ts", "duration_ns",
+            "event_no", "begin_ts", "end_ts", "duration_ns", "iteration",
         ])
         writer.writerows(rows)

@@ -223,21 +223,22 @@ if __name__ == "__main__":
             ngram_size=args.ngram_size,
             spec_length=args.spec_length,
         )
-
+            
         num_workers, num_schedulers = mi.get_configurations_from_gpu(rank)
 
         if args.profiling:
-            # The kernel has no bounds check on this buffer: it writes one
-            # row per block (workers, then scheduler blocks of 4 warps), one
-            # entry per task begin/end, for every decode iteration. Qwen3-8B
-            # on 128 workers is ~280 entries per row per iteration (17732
-            # tasks / 128 workers x 2); 1024 leaves room for scheduler rows.
+            # One row per worker and per scheduler block (4 scheduler warps);
+            # each task writes a begin and an end entry. Qwen3-8B on 128
+            # workers is ~280 entries per worker row per iteration (17732
+            # tasks / 128 x 2); 1024 leaves headroom for scheduler rows.
+            # Writes past the end are dropped and the export warns.
+            from mirage.mpk.persistent_kernel import profile_iters
             num_profiler_rows = num_workers + num_schedulers // 4
-            profiler_entries_per_row_per_iter = 1024
+            profiler_entries = max(
+                3000 * 128, 1 + num_profiler_rows * 1024 * profile_iters()
+            )
             profiler_tensor = torch.zeros(
-                1 + num_profiler_rows * profiler_entries_per_row_per_iter
-                * args.max_seq_length,
-                dtype=torch.uint64, device="cuda"
+                profiler_entries, dtype=torch.uint64, device="cuda"
             ).contiguous()
         else:
             profiler_tensor = None

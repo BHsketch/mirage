@@ -245,6 +245,14 @@ def _spec_decode_enabled(mpk) -> bool:
     return cfg is not None and getattr(cfg, "method", None) == "eagle3"
 
 
+def profile_iters() -> int:
+    """Task-graph iterations a profiling build runs (env BH_MPK_PROFILE_ITERS)."""
+    k = int(os.environ.get("BH_MPK_PROFILE_ITERS", "1"))
+    if k < 1:
+        raise ValueError(f"BH_MPK_PROFILE_ITERS must be >= 1, got {k}")
+    return k
+
+
 def get_compile_command(
     mpk,
     target_cc,
@@ -381,6 +389,12 @@ def get_compile_command(
     
     if profiling:
         flags = flags + ["-DMPK_ENABLE_PROFILING"]
+        # BHsketch: stop after this many task-graph iterations (upstream: 1),
+        # and bounds-check profiler writes against the buffer's length.
+        flags = flags + [
+            f"-DBH_MPK_PROFILE_ITERS={profile_iters()}",
+            f"-DBH_MPK_PROFILER_ENTRIES={mpk.profiler_tensor.numel()}",
+        ]
     # BHsketch: Nsight Compute range-replay markers around the worker/scheduler launch
     if os.environ.get("BH_MPK_NCU_RANGE", "0") == "1":
         flags = flags + ["-DBH_MPK_NCU_RANGE"]

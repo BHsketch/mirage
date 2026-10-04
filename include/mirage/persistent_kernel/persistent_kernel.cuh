@@ -57,6 +57,23 @@
 
 using bfloat16 = type::bfloat16_t;
 using namespace mirage::runtime;
+
+#ifdef MPK_ENABLE_PROFILING
+// Profiling builds stop after BH_MPK_PROFILE_ITERS task-graph iterations
+// (upstream stops after 1, which with chunked prefill is the first prefill
+// chunk). The run also stops if the requests finish first.
+#ifndef BH_MPK_PROFILE_ITERS
+#define BH_MPK_PROFILE_ITERS 1
+#endif
+// Iterations finished in this launch. Reset by prepare_kernel; afterwards
+// only prepare_next_batch touches it, once per iteration, from the one
+// scheduler thread that handles EVENT_END_OF_TASK_GRAPH.
+__device__ int bh_profile_iters_done;
+
+__device__ __forceinline__ bool bh_profile_iters_reached() {
+  return ++bh_profile_iters_done >= BH_MPK_PROFILE_ITERS;
+}
+#endif
 // Configurations for the MPK runtime
 // #define MPK_MAX_NUM_BATCHED_REQUESTS 16
 // #define MPK_MAX_NUM_BATCHED_TOKENS 64
@@ -193,6 +210,11 @@ __global__ void init_kernel(RuntimeConfig config) {
 
 __global__ void prepare_kernel(RuntimeConfig config,
                                int end_of_task_graph_event_pos) {
+#ifdef MPK_ENABLE_PROFILING
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    bh_profile_iters_done = 0;
+  }
+#endif
   // Initialize worker queue last task id
   // Each worker now maintains a local and a remote worker queue
   for (int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -270,6 +292,9 @@ __device__ __forceinline__ int
 // TODO: parallelize this processing
 __device__ __forceinline__ bool
     prepare_next_batch(RuntimeConfig const &config) {
+#if defined(MPK_ENABLE_PROFILING) && !defined(MPK_TEST_MODE)
+  bool const profile_stop = bh_profile_iters_reached();
+#endif
   // Page indices snapshot in global memory (for in-place compaction)
   int page_queue_head = *config.page_queue_head;
   int page_queue_tail = *config.page_queue_tail;
@@ -316,10 +341,14 @@ __device__ __forceinline__ bool
       config.step[request_id] = step + num_tokens;
       int step_advance = num_tokens;
 #endif
-#if defined(MPK_ENABLE_PROFILING) || defined(MPK_TEST_MODE)
+#if defined(MPK_TEST_MODE)
       if (true)
 #else
-      if ((step + step_advance + 1 >= config.max_seq_length) ||
+      if (
+#if defined(MPK_ENABLE_PROFILING)
+          profile_stop ||
+#endif
+          (step + step_advance + 1 >= config.max_seq_length) ||
           ((config.tokens[request_id * MPK_MAX_SEQ_LENGTH + step +
                           step_advance] == config.eos_token_id) &&
            (step + step_advance >= prompt_len)))
@@ -539,16 +568,16 @@ __device__ __forceinline__ bool
 #endif
   config.step[0] = step + config.new_token_nums[0];
 
+  if (
 #ifdef MPK_ENABLE_PROFILING
-  return false;
-#else
-  if ((step + 2 >= config.max_seq_length) ||
+      bh_profile_iters_reached() ||
+#endif
+      (step + 2 >= config.max_seq_length) ||
       (config.tokens[step + 1] == config.eos_token_id)) {
     return false;
   } else {
     return true;
   }
-#endif
 }
 #endif
 
@@ -569,6 +598,9 @@ __device__ __forceinline__ bool
 // Lock-free power-of-2 rings: index = cursor & (MPK_PINNED_RING_CAPACITY - 1).
 __device__ __forceinline__ bool
     prepare_next_batch(RuntimeConfig const &config) {
+#ifdef MPK_ENABLE_PROFILING
+  bool const profile_stop = bh_profile_iters_reached();
+#endif
   // This scheduler stages the page table in STATIC shared memory, capped at
   // 48 KB per block, so groups x pages x 4 B is a hard ceiling on the pool.
   static_assert(
@@ -623,14 +655,14 @@ __device__ __forceinline__ bool
     // when it observes the updated step.
     st_release_sys_i32(&config.pinned_step[row], (int32_t)(step + num_tokens));
 
+    bool done =
 #ifdef MPK_ENABLE_PROFILING
-    bool done = true;
-#else
-    bool done = (step + num_tokens + 1 >= config.max_seq_length) ||
+        profile_stop ||
+#endif
+        (step + num_tokens + 1 >= config.max_seq_length) ||
                 ((config.tokens[row * MPK_MAX_SEQ_LENGTH + step + num_tokens] ==
                   config.eos_token_id) &&
                  (step + num_tokens >= prompt_len));
-#endif
 
     if (done) {
       int rid = config.request_rids[i];
