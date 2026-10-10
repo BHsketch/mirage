@@ -54,6 +54,9 @@
 #else
 #include "tasks/ampere/task_header.cuh"
 #endif
+// BHsketch: FP64 task-start markers for ncu PM sampling (-DBH_MPK_PM_MARKERS);
+// compiles to nothing without the flag.
+#include "pm_marker.cuh"
 
 using bfloat16 = type::bfloat16_t;
 using namespace mirage::runtime;
@@ -1159,6 +1162,9 @@ __device__ __forceinline__ void execute_worker(RuntimeConfig config) {
       PROFILER_EVENT_START(task_desc->task_type, task_counter);
     }
 #endif
+    // Must stay next to PROFILER_EVENT_START: mpk_ncu_align.py predicts the
+    // marker signal from each trace row's start stamp.
+    bh_pm_mark_task_start(task_desc->task_type);
 
     // Successfully fetched a new task
     if (task_desc->task_type == TASK_TERMINATE) {

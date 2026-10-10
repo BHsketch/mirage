@@ -400,6 +400,13 @@ def get_compile_command(
         flags = flags + ["-DBH_MPK_NCU_RANGE"]
     if os.environ.get("BH_SPLIT_WORKER_SCHEDULER", "1") == "1":
         flags = flags + ["-DBH_SPLIT_WORKER_SCHEDULER"]
+    # BHsketch: FP64 task-start markers for ncu PM sampling (pm_marker.cuh)
+    if os.environ.get("BH_MPK_PM_MARKERS", "0") == "1":
+        flags = flags + [
+            "-DBH_MPK_PM_MARKERS",
+            "-DBH_MPK_PM_MARKER_BURST="
+            + os.environ.get("BH_MPK_PM_MARKER_BURST", "32"),
+        ]
 
     return common_cmd + specific_cmd + flags
 
