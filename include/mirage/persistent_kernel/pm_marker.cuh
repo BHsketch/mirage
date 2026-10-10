@@ -71,8 +71,8 @@ __device__ __forceinline__ void pm_mark_fp64() {
 
 __device__ __forceinline__ void bh_pm_mark_task_start(int task_type) {
   // TASK_TERMINATE has no trace row, so it gets no marker either.
-  if (threadIdx.x != 0 || task_type == TASK_TERMINATE) return;
-  if (task_type == TASK_BEGIN_TASK_GRAPH) {
+  if (threadIdx.x != 0 || task_type == mirage::runtime::TASK_TERMINATE) return;
+  if (task_type == mirage::runtime::TASK_BEGIN_TASK_GRAPH) {
     pm_mark_fp64<BH_MPK_PM_MARKER_BURST>();
   } else {
     pm_mark_fp64<1>();
