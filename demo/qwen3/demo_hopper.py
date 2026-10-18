@@ -99,6 +99,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--ignore-eos", action="store_true", help="Ignore eos token during generation")
     parser.add_argument("--split-kv-cache", action="store_true", help="Use split-kv cache")
+    parser.add_argument("--prompt-tokens", default=0, type=int,
+                        help="Profiling: repeat code_text in the prompt to reach about this many tokens (0 = default prompt)")
     args = parser.parse_args()
     try:
         from mpi4py import MPI
@@ -163,6 +165,10 @@ if __name__ == "__main__":
                 """
     #question = "Can you please change x axis to start from 0"
     #prompt = code_text + "\n" + question
+    if args.prompt_tokens > 0:
+        # Long-context profiling: content doesn't matter, only the length.
+        unit = len(tokenizer(code_text).input_ids)
+        prompt = code_text * max(1, args.prompt_tokens // unit)
     messages = [
         {
             "role": "system",
